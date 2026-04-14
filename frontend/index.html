@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Gemma Pharma AI</title>
+<title>Pharma AI</title>
 
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
@@ -12,10 +12,9 @@
 <script src="https://unpkg.com/ngl"></script>
 
 <style>
-body { background:#000; color:white; font-family:monospace; }
+body { background:black; color:white; font-family:monospace; }
 .viewer { height:420px; border:1px solid #333; border-radius:10px; }
-.card { border:1px solid #333; padding:12px; margin-top:10px; border-radius:10px; }
-button { cursor:pointer; }
+.card { border:1px solid #333; padding:10px; margin-top:10px; }
 </style>
 </head>
 
@@ -26,20 +25,10 @@ button { cursor:pointer; }
 
 const {useState,useEffect,useRef} = React;
 
-// ---------------- VOICE ----------------
-const speak = (text)=>{
-  if(!text) return;
-  const u = new SpeechSynthesisUtterance(text);
-  speechSynthesis.speak(u);
-};
+const API_URL = "https://pharmai-vgau.onrender.com";
 
-// ---------------- LOADER ----------------
-const Loader = ()=>(
-  <div className="card">🧠 AI Analyzing molecule/protein...</div>
-);
+function Viewer({data}){
 
-// ---------------- VIEWER ----------------
-const Viewer = ({data})=>{
   const molRef = useRef();
   const protRef = useRef();
 
@@ -47,180 +36,75 @@ const Viewer = ({data})=>{
 
     if(!data) return;
 
-    // ---------------- PROTEIN VIEW ----------------
-    if(data.type === "protein" && protRef.current){
-
+    if(data.type==="protein" && protRef.current){
       const stage = new NGL.Stage(protRef.current);
-
-      stage.loadFile(`rcsb://${data.pdb_id}`)
-        .then(comp => {
-          comp.addRepresentation("cartoon", {
-            colorScheme: "chainname"
-          });
-
-          comp.autoView();
-        });
-
+      stage.loadFile(`rcsb://${data.pdb_id}`).then(c=>{
+        c.addRepresentation("cartoon",{colorScheme:"chainname"});
+        c.autoView();
+      });
     }
 
-    // ---------------- MOLECULE VIEW ----------------
-    if(data.type === "molecule" && molRef.current && window.$3Dmol){
+    if(data.type==="molecule" && molRef.current){
+      const viewer = $3Dmol.createViewer(molRef.current,{backgroundColor:"black"});
 
-      const viewer = $3Dmol.createViewer(molRef.current, {
-        backgroundColor: "black"
+      fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/${data.smiles}/SDF`)
+      .then(r=>r.text())
+      .then(sdf=>{
+        viewer.addModel(sdf,"sdf");
+        viewer.setStyle({stick:{radius:0.2}});
+        viewer.zoomTo();
+        viewer.spin(true);
+        viewer.render();
       });
-
-      fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/${encodeURIComponent(data.smiles)}/SDF`)
-        .then(res=>res.text())
-        .then(sdf=>{
-
-          viewer.addModel(sdf,"sdf");
-
-          viewer.setStyle({},{
-            stick:{radius:0.2},
-            sphere:{scale:0.25}
-          });
-
-          viewer.zoomTo();
-          viewer.spin(true);
-          viewer.render();
-        });
-
     }
 
   },[data]);
 
   return (
-    <div className="mt-4">
-
-      {data?.type === "molecule" && (
-        <div className="viewer" ref={molRef}></div>
-      )}
-
-      {data?.type === "protein" && (
-        <div className="viewer" ref={protRef}></div>
-      )}
-
+    <div>
+      {data?.type==="protein" && <div className="viewer" ref={protRef}></div>}
+      {data?.type==="molecule" && <div className="viewer" ref={molRef}></div>}
     </div>
   );
-};
+}
 
-// ---------------- APP ----------------
-const App = ()=>{
+function App(){
 
-  const [query,setQuery] = useState("");
+  const [q,setQ] = useState("");
   const [data,setData] = useState(null);
   const [loading,setLoading] = useState(false);
 
-  // 🔥 CHANGE THIS AFTER DEPLOYMENT
-  const API_URL = "https://pharmai-vgau.onrender.com";
-
   const run = async()=>{
     setLoading(true);
-    setData(null);
-
-    const res = await fetch(`${API_URL}/analyze?q=${encodeURIComponent(query)}`);
-    const d = await res.json();
-
+    const r = await fetch(`${API_URL}/analyze?q=${q}`);
+    const d = await r.json();
     setData(d);
-    speak(d.explanation || "Analysis complete");
-
-    setLoading(false);
-  };
-
-  const upload = async(e)=>{
-    const file = e.target.files[0];
-    if(!file) return;
-
-    const form = new FormData();
-    form.append("file",file);
-
-    setLoading(true);
-
-    const res = await fetch(`${API_URL}/upload`,{
-      method:"POST",
-      body:form
-    });
-
-    const d = await res.json();
-    setData(d);
-
-    speak(d.message || "File uploaded");
     setLoading(false);
   };
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
+    <div style={{padding:20}}>
 
-      <h1 className="text-2xl mb-2">🧬 GEMMA PHARMA AI</h1>
-      <p className="text-gray-400 text-sm">
-        Drug Discovery • Protein Viewer • 3D Molecules
-      </p>
+      <h2>🧬 Pharma AI</h2>
 
-      <textarea
-        className="w-full p-3 mt-4 bg-black border border-white"
-        placeholder="Enter drug name or virus/protein query..."
-        value={query}
-        onChange={e=>setQuery(e.target.value)}
-      />
+      <input value={q} onChange={e=>setQ(e.target.value)} />
+      <button onClick={run}>Analyze</button>
 
-      <button
-        onClick={run}
-        className="mt-3 px-6 py-2 border border-white"
-      >
-        Analyze
-      </button>
-
-      <input type="file" onChange={upload} className="mt-3"/>
-
-      {loading && <Loader/>}
+      {loading && <p>Loading...</p>}
 
       {data && <Viewer data={data}/>}
 
       {data && (
-        <div className="mt-4">
-
-          {data.properties && (
-            <div className="card">
-              <h3>⚗️ Properties</h3>
-              {Object.entries(data.properties).map(([k,v])=>(
-                <div key={k}>{k}: {v}</div>
-              ))}
-            </div>
-          )}
-
-          {data.drug_likeness_score !== undefined && (
-            <div className="card">
-              💊 Drug Score: {data.drug_likeness_score}/4
-            </div>
-          )}
-
-          {data.similarity_score !== undefined && (
-            <div className="card">
-              🧪 Similarity: {data.similarity_score}
-            </div>
-          )}
-
-          {data.candidate && (
-            <div className="card">
-              🧬 Candidate: {data.candidate}
-            </div>
-          )}
-
-          {data.explanation && (
-            <div className="card">
-              📘 Explanation:
-              <br/>
-              {data.explanation}
-            </div>
-          )}
-
+        <div className="card">
+          <div>💊 Score: {data.drug_likeness_score}</div>
+          <div>🧪 Similarity: {data.similarity_score}</div>
+          <div>📘 {String(data.explanation)}</div>
         </div>
       )}
 
     </div>
   );
-};
+}
 
 ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
 
