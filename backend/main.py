@@ -41,13 +41,14 @@ async def ask_gemma(prompt: str):
 
 
 # -----------------------------
-# 🧪 PubChem SMILES fetch
+# 🧪 PubChem SMILES + properties
 # -----------------------------
 def get_smiles(name: str):
     url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{name}/property/IsomericSMILES,MW,XLogP,TPSA,HBondDonorCount,HBondAcceptorCount/JSON"
     try:
         r = httpx.get(url, timeout=10)
         data = r.json()["PropertyTable"]["Properties"][0]
+
         return {
             "smiles": data["IsomericSMILES"],
             "mw": data.get("MW"),
@@ -61,7 +62,7 @@ def get_smiles(name: str):
 
 
 # -----------------------------
-# ⚗️ Drug-likeness (NO RDKit)
+# ⚗️ Drug-likeness score
 # -----------------------------
 def drug_score(props: dict):
     if not props:
@@ -82,7 +83,7 @@ def drug_score(props: dict):
 
 
 # -----------------------------
-# 🧬 SELFIES mutation generator
+# 🧬 SELFIES mutation
 # -----------------------------
 def generate_candidate(smiles: str):
     try:
@@ -102,26 +103,52 @@ def generate_candidate(smiles: str):
 
 
 # -----------------------------
-# 🧪 Similarity (lightweight, no RDKit)
+# 🧪 similarity (lightweight)
 # -----------------------------
-def similarity(smiles1: str, smiles2: str):
-    set1 = set(smiles1)
-    set2 = set(smiles2)
-
+def similarity(a: str, b: str):
+    set1, set2 = set(a), set(b)
     if not set1 or not set2:
         return 0.0
-
     return round(len(set1 & set2) / len(set1 | set2), 3)
+
+
+# -----------------------------
+# 🧠 Protein detection
+# -----------------------------
+def is_protein_query(q: str):
+    keywords = [
+        "virus", "protein", "covid", "enzyme", "spike",
+        "receptor", "pdb", "rna", "dna"
+    ]
+    return any(k in q.lower() for k in keywords)
+
+
+# -----------------------------
+# 🧬 Protein mapping
+# -----------------------------
+def get_pdb_id(query: str):
+    q = query.lower()
+
+    # known real structures
+    if "covid" in q or "virus" in q or "protease" in q:
+        return "6LU7"  # COVID main protease
+
+    if "spike" in q:
+        return "6VSB"
+
+    return "6LU7"  # default fallback
 
 
 # -----------------------------
 # 🧠 Query resolver
 # -----------------------------
 async def resolve_query(q: str):
-    ql = q.lower()
 
-    if any(x in ql for x in ["=", "(", ")", "#"]):
-        return {"type": "molecule", "value": q}
+    if is_protein_query(q):
+        return {
+            "type": "protein",
+            "value": get_pdb_id(q)
+        }
 
     drug = await ask_gemma(f"Return only a known drug or chemical name for: {q}")
 
@@ -140,44 +167,53 @@ async def analyze(q: str):
     decision = await resolve_query(q)
     name = decision["value"]
 
-    # Get PubChem data
+    # ---------------- PROTEIN MODE ----------------
+    if decision["type"] == "protein":
+
+        return {
+            "type": "protein",
+            "pdb_id": name,
+            "input": q,
+            "explanation": await ask_gemma(
+                f"Explain structure and drug targeting of {q}"
+            ),
+        }
+
+    # ---------------- MOLECULE MODE ----------------
     data = get_smiles(name)
 
     if data:
         smiles = data["smiles"]
     else:
-        smiles = "CCO"  # fallback ethanol
+        smiles = "CCO"
 
     candidate = generate_candidate(smiles)
 
     return {
+        "type": "molecule",
         "input": q,
         "molecule": name,
         "smiles": smiles,
         "candidate": candidate,
 
         "properties": data,
-
         "drug_likeness_score": drug_score(data),
-
         "similarity_score": similarity(smiles, candidate),
 
         "explanation": await ask_gemma(
-            f"Explain pharmacology and therapeutic relevance of {name}"
+            f"Explain pharmacology and therapeutic use of {name}"
         ),
     }
 
 
 # -----------------------------
-# 📂 Upload endpoint
+# 📂 upload endpoint
 # -----------------------------
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     content = await file.read()
-    text = content.decode("utf-8", errors="ignore")
-
     return {
         "type": "protein",
-        "preview": text[:4000],
-        "message": "Uploaded successfully",
+        "preview": content.decode("utf-8", errors="ignore")[:4000],
+        "message": "uploaded successfully"
     }
