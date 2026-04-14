@@ -9,6 +9,7 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.0.4/3Dmol-min.js"></script>
+<script src="https://unpkg.com/ngl"></script>
 
 <style>
 body { background:#000; color:white; font-family:monospace; }
@@ -34,130 +35,131 @@ const speak = (text)=>{
 
 // ---------------- LOADER ----------------
 const Loader = ()=>(
-  <div className="card">🧠 Processing AI analysis...</div>
+  <div className="card">🧠 AI Analyzing molecule/protein...</div>
 );
 
-// ---------------- 3D VIEWER ----------------
+// ---------------- VIEWER ----------------
 const Viewer = ({data})=>{
-  const ref = useRef();
+  const molRef = useRef();
+  const protRef = useRef();
 
   useEffect(()=>{
-    if(!data || !window.$3Dmol || !ref.current) return;
 
-    const viewer = $3Dmol.createViewer(ref.current, {
-      backgroundColor: "black"
-    });
+    if(!data) return;
 
-    try {
+    // ---------------- PROTEIN VIEW ----------------
+    if(data.type === "protein" && protRef.current){
 
-      // ---------------- PROTEIN ----------------
-      if(data.type === "protein") {
+      const stage = new NGL.Stage(protRef.current);
 
-        if(data.preview) {
-          viewer.addModel(data.preview, "pdb");
-          viewer.setStyle({}, {cartoon:{color:"spectrum"}});
+      stage.loadFile(`rcsb://${data.pdb_id}`)
+        .then(comp => {
+          comp.addRepresentation("cartoon", {
+            colorScheme: "chainname"
+          });
+
+          comp.autoView();
+        });
+
+    }
+
+    // ---------------- MOLECULE VIEW ----------------
+    if(data.type === "molecule" && molRef.current && window.$3Dmol){
+
+      const viewer = $3Dmol.createViewer(molRef.current, {
+        backgroundColor: "black"
+      });
+
+      // 🔥 FIX: convert SMILES via PubChem SDF
+      fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/${encodeURIComponent(data.smiles)}/SDF`)
+        .then(res=>res.text())
+        .then(sdf=>{
+
+          viewer.addModel(sdf,"sdf");
+
+          viewer.setStyle({},{
+            stick:{radius:0.2},
+            sphere:{scale:0.25}
+          });
+
           viewer.zoomTo();
+          viewer.spin(true); // 🔥 360° auto rotation
           viewer.render();
-        }
+        });
 
-        return;
-      }
-
-      // ---------------- MOLECULE ----------------
-      if(data.type === "molecule" && data.smiles) {
-
-        // IMPORTANT: SMILES needs conversion
-        // 3Dmol supports SMILES but better rendering via style fix
-
-        viewer.addModel(data.smiles, "smi");
-        viewer.setStyle({}, {stick:{}});
-        viewer.zoomTo();
-        viewer.render();
-      }
-
-    } catch(err){
-      console.log("Viewer error:", err);
     }
 
   },[data]);
 
-  return <div ref={ref} className="viewer"></div>;
+  return (
+    <div className="mt-4">
+
+      {/* MOLECULE VIEW */}
+      {data.type === "molecule" && (
+        <div className="viewer" ref={molRef}></div>
+      )}
+
+      {/* PROTEIN VIEW */}
+      {data.type === "protein" && (
+        <div className="viewer" ref={protRef}></div>
+      )}
+
+    </div>
+  );
 };
 
-// ---------------- MAIN APP ----------------
+// ---------------- APP ----------------
 const App = ()=>{
 
   const [query,setQuery] = useState("");
   const [data,setData] = useState(null);
   const [loading,setLoading] = useState(false);
 
-  // ---------------- ANALYZE ----------------
   const run = async()=>{
-    if(!query) return;
-
     setLoading(true);
     setData(null);
 
-    try{
-      const res = await fetch(`http://localhost:8000/analyze?q=${encodeURIComponent(query)}`);
-      const d = await res.json();
+    const res = await fetch(`http://localhost:8000/analyze?q=${encodeURIComponent(query)}`);
+    const d = await res.json();
 
-      setData(d);
-
-      if(d.explanation){
-        speak(d.explanation);
-      }
-
-    }catch(err){
-      alert("Backend error handled safely");
-    }
+    setData(d);
+    speak(d.explanation || "Analysis complete");
 
     setLoading(false);
   };
 
-  // ---------------- UPLOAD ----------------
   const upload = async(e)=>{
     const file = e.target.files[0];
     if(!file) return;
 
     const form = new FormData();
-    form.append("file", file);
+    form.append("file",file);
 
     setLoading(true);
 
-    try{
-      const res = await fetch("http://localhost:8000/upload",{
-        method:"POST",
-        body:form
-      });
+    const res = await fetch("http://localhost:8000/upload",{
+      method:"POST",
+      body:form
+    });
 
-      const d = await res.json();
-      setData(d);
+    const d = await res.json();
+    setData(d);
 
-      if(d.message){
-        speak(d.message);
-      }
-
-    }catch(err){
-      alert("Upload failed safely handled");
-    }
-
+    speak(d.message || "File uploaded");
     setLoading(false);
   };
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
 
-      {/* HEADER */}
-      <h1 className="text-2xl mb-4">🧬 GEMMA PHARMA AI</h1>
-      <p className="text-sm text-gray-400">
-        AI Drug Discovery • RDKit • Protein Viewer • PubChem
+      <h1 className="text-2xl mb-2">🧬 GEMMA PHARMA AI</h1>
+      <p className="text-gray-400 text-sm">
+        Drug Discovery • Protein Viewer • 3D Molecules
       </p>
 
-      {/* INPUT */}
       <textarea
-        className="w-full p-3 bg-black border border-white mt-4"
-        placeholder="Ask: drug for cancer, aspirin, covid protein..."
+        className="w-full p-3 mt-4 bg-black border border-white"
+        placeholder="Enter drug name or virus/protein query..."
         value={query}
         onChange={e=>setQuery(e.target.value)}
       />
@@ -171,47 +173,40 @@ const App = ()=>{
 
       <input type="file" onChange={upload} className="mt-3"/>
 
-      {/* LOADING */}
-      {loading && <Loader />}
+      {loading && <Loader/>}
 
-      {/* VIEWER */}
-      {data && !loading && <Viewer data={data}/>}
+      {data && <Viewer data={data}/>}
 
-      {/* RESULTS */}
-      {data && !loading && (
-
+      {data && (
         <div className="mt-4">
 
-          {/* ADMET */}
+          {/* PROPERTIES */}
           {data.properties && (
             <div className="card">
-              <h3 className="font-bold">⚗️ ADMET Properties</h3>
+              <h3>⚗️ Properties</h3>
               {Object.entries(data.properties).map(([k,v])=>(
                 <div key={k}>{k}: {v}</div>
               ))}
             </div>
           )}
 
-          {/* SCORE */}
+          {/* SCORES */}
           {data.drug_likeness_score !== undefined && (
             <div className="card">
-              💊 Drug-likeness Score: {data.drug_likeness_score}/4
+              💊 Drug Score: {data.drug_likeness_score}/4
             </div>
           )}
 
-          {/* SIMILARITY */}
           {data.similarity_score !== undefined && (
             <div className="card">
-              🧪 Similarity Score: {data.similarity_score}
+              🧪 Similarity: {data.similarity_score}
             </div>
           )}
 
           {/* CANDIDATE */}
           {data.candidate && (
             <div className="card">
-              🧬 AI Candidate Molecule:
-              <br/>
-              {data.candidate}
+              🧬 Candidate: {data.candidate}
             </div>
           )}
 
