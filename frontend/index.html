@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Gemma Pharma AI</title>
+
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.0.4/3Dmol-min.js"></script>
+
+<style>
+body { background:#000; color:white; font-family:monospace; }
+.viewer { height:420px; border:1px solid #333; border-radius:10px; }
+.card { border:1px solid #333; padding:12px; margin-top:10px; border-radius:10px; }
+button { cursor:pointer; }
+</style>
+</head>
+
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+
+const {useState,useEffect,useRef} = React;
+
+// ---------------- VOICE ----------------
+const speak = (text)=>{
+  if(!text) return;
+  const u = new SpeechSynthesisUtterance(text);
+  speechSynthesis.speak(u);
+};
+
+// ---------------- LOADER ----------------
+const Loader = ()=>(
+  <div className="card">🧠 Processing AI analysis...</div>
+);
+
+// ---------------- 3D VIEWER ----------------
+const Viewer = ({data})=>{
+  const ref = useRef();
+
+  useEffect(()=>{
+    if(!data || !window.$3Dmol || !ref.current) return;
+
+    const viewer = $3Dmol.createViewer(ref.current, {
+      backgroundColor: "black"
+    });
+
+    try {
+
+      // ---------------- PROTEIN ----------------
+      if(data.type === "protein") {
+
+        if(data.preview) {
+          viewer.addModel(data.preview, "pdb");
+          viewer.setStyle({}, {cartoon:{color:"spectrum"}});
+          viewer.zoomTo();
+          viewer.render();
+        }
+
+        return;
+      }
+
+      // ---------------- MOLECULE ----------------
+      if(data.type === "molecule" && data.smiles) {
+
+        // IMPORTANT: SMILES needs conversion
+        // 3Dmol supports SMILES but better rendering via style fix
+
+        viewer.addModel(data.smiles, "smi");
+        viewer.setStyle({}, {stick:{}});
+        viewer.zoomTo();
+        viewer.render();
+      }
+
+    } catch(err){
+      console.log("Viewer error:", err);
+    }
+
+  },[data]);
+
+  return <div ref={ref} className="viewer"></div>;
+};
+
+// ---------------- MAIN APP ----------------
+const App = ()=>{
+
+  const [query,setQuery] = useState("");
+  const [data,setData] = useState(null);
+  const [loading,setLoading] = useState(false);
+
+  // ---------------- ANALYZE ----------------
+  const run = async()=>{
+    if(!query) return;
+
+    setLoading(true);
+    setData(null);
+
+    try{
+      const res = await fetch(`http://localhost:8000/analyze?q=${encodeURIComponent(query)}`);
+      const d = await res.json();
+
+      setData(d);
+
+      if(d.explanation){
+        speak(d.explanation);
+      }
+
+    }catch(err){
+      alert("Backend error handled safely");
+    }
+
+    setLoading(false);
+  };
+
+  // ---------------- UPLOAD ----------------
+  const upload = async(e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+
+    const form = new FormData();
+    form.append("file", file);
+
+    setLoading(true);
+
+    try{
+      const res = await fetch("http://localhost:8000/upload",{
+        method:"POST",
+        body:form
+      });
+
+      const d = await res.json();
+      setData(d);
+
+      if(d.message){
+        speak(d.message);
+      }
+
+    }catch(err){
+      alert("Upload failed safely handled");
+    }
+
+    setLoading(false);
+  };
+
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+
+      {/* HEADER */}
+      <h1 className="text-2xl mb-4">🧬 GEMMA PHARMA AI</h1>
+      <p className="text-sm text-gray-400">
+        AI Drug Discovery • RDKit • Protein Viewer • PubChem
+      </p>
+
+      {/* INPUT */}
+      <textarea
+        className="w-full p-3 bg-black border border-white mt-4"
+        placeholder="Ask: drug for cancer, aspirin, covid protein..."
+        value={query}
+        onChange={e=>setQuery(e.target.value)}
+      />
+
+      <button
+        onClick={run}
+        className="mt-3 px-6 py-2 border border-white"
+      >
+        Analyze
+      </button>
+
+      <input type="file" onChange={upload} className="mt-3"/>
+
+      {/* LOADING */}
+      {loading && <Loader />}
+
+      {/* VIEWER */}
+      {data && !loading && <Viewer data={data}/>}
+
+      {/* RESULTS */}
+      {data && !loading && (
+
+        <div className="mt-4">
+
+          {/* ADMET */}
+          {data.properties && (
+            <div className="card">
+              <h3 className="font-bold">⚗️ ADMET Properties</h3>
+              {Object.entries(data.properties).map(([k,v])=>(
+                <div key={k}>{k}: {v}</div>
+              ))}
+            </div>
+          )}
+
+          {/* SCORE */}
+          {data.drug_likeness_score !== undefined && (
+            <div className="card">
+              💊 Drug-likeness Score: {data.drug_likeness_score}/4
+            </div>
+          )}
+
+          {/* SIMILARITY */}
+          {data.similarity_score !== undefined && (
+            <div className="card">
+              🧪 Similarity Score: {data.similarity_score}
+            </div>
+          )}
+
+          {/* CANDIDATE */}
+          {data.candidate && (
+            <div className="card">
+              🧬 AI Candidate Molecule:
+              <br/>
+              {data.candidate}
+            </div>
+          )}
+
+          {/* EXPLANATION */}
+          {data.explanation && (
+            <div className="card">
+              📘 Explanation:
+              <br/>
+              {data.explanation}
+            </div>
+          )}
+
+        </div>
+      )}
+
+    </div>
+  );
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+
+</script>
+</body>
+</html>
