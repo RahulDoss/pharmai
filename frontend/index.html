@@ -70,7 +70,6 @@ const Viewer = ({data})=>{
         backgroundColor: "black"
       });
 
-      // 🔥 FIX: convert SMILES via PubChem SDF
       fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/${encodeURIComponent(data.smiles)}/SDF`)
         .then(res=>res.text())
         .then(sdf=>{
@@ -83,7 +82,7 @@ const Viewer = ({data})=>{
           });
 
           viewer.zoomTo();
-          viewer.spin(true); // 🔥 360° auto rotation
+          viewer.spin(true);
           viewer.render();
         });
 
@@ -94,13 +93,11 @@ const Viewer = ({data})=>{
   return (
     <div className="mt-4">
 
-      {/* MOLECULE VIEW */}
-      {data.type === "molecule" && (
+      {data?.type === "molecule" && (
         <div className="viewer" ref={molRef}></div>
       )}
 
-      {/* PROTEIN VIEW */}
-      {data.type === "protein" && (
+      {data?.type === "protein" && (
         <div className="viewer" ref={protRef}></div>
       )}
 
@@ -115,11 +112,14 @@ const App = ()=>{
   const [data,setData] = useState(null);
   const [loading,setLoading] = useState(false);
 
+  // 🔥 CHANGE THIS AFTER DEPLOYMENT
+  const API_URL = "https://YOUR-BACKEND.onrender.com";
+
   const run = async()=>{
     setLoading(true);
     setData(null);
 
-    const res = await fetch(`http://localhost:8000/analyze?q=${encodeURIComponent(query)}`);
+    const res = await fetch(`${API_URL}/analyze?q=${encodeURIComponent(query)}`);
     const d = await res.json();
 
     setData(d);
@@ -137,7 +137,7 @@ const App = ()=>{
 
     setLoading(true);
 
-    const res = await fetch("http://localhost:8000/upload",{
+    const res = await fetch(`${API_URL}/upload`,{
       method:"POST",
       body:form
     });
@@ -180,7 +180,6 @@ const App = ()=>{
       {data && (
         <div className="mt-4">
 
-          {/* PROPERTIES */}
           {data.properties && (
             <div className="card">
               <h3>⚗️ Properties</h3>
@@ -190,7 +189,6 @@ const App = ()=>{
             </div>
           )}
 
-          {/* SCORES */}
           {data.drug_likeness_score !== undefined && (
             <div className="card">
               💊 Drug Score: {data.drug_likeness_score}/4
@@ -203,14 +201,12 @@ const App = ()=>{
             </div>
           )}
 
-          {/* CANDIDATE */}
           {data.candidate && (
             <div className="card">
               🧬 Candidate: {data.candidate}
             </div>
           )}
 
-          {/* EXPLANATION */}
           {data.explanation && (
             <div className="card">
               📘 Explanation:
