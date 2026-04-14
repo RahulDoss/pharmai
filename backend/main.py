@@ -1,14 +1,9 @@
-pip install fastapi uvicorn httpx rdkit-pypi python-dotenv selfies
-
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
 import os, random, httpx
 import selfies as sf
-
-from rdkit import Chem
-from rdkit.Chem import Descriptors, AllChem, DataStructs
 
 load_dotenv()
 HF_TOKEN = os.getenv("HF_TOKEN")
@@ -23,7 +18,7 @@ app.add_middleware(
 )
 
 # -----------------------------
-# 🧠 LLM (Gemma - HuggingFace)
+# 🧠 LLM (HuggingFace - Gemma)
 # -----------------------------
 async def ask_gemma(prompt: str):
     url = "https://api-inference.huggingface.co/models/google/gemma-2b-it"
@@ -34,67 +29,60 @@ async def ask_gemma(prompt: str):
             res = await client.post(url, headers=headers, json={"inputs": prompt})
             data = res.json()
 
-            if isinstance(data, list):
-                return data[0].get("generated_text", "")
+            if isinstance(data, list) and "generated_text" in data[0]:
+                return data[0]["generated_text"]
 
-            return "LLM unavailable"
-        except:
-            return "LLM error"
+            if isinstance(data, dict) and "generated_text" in data:
+                return data["generated_text"]
+
+            return str(data)
+        except Exception as e:
+            return f"LLM error: {str(e)}"
 
 
 # -----------------------------
-# 🧪 PubChem → SMILES
+# 🧪 PubChem SMILES fetch
 # -----------------------------
 def get_smiles(name: str):
-    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{name}/property/IsomericSMILES/JSON"
+    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{name}/property/IsomericSMILES,MW,XLogP,TPSA,HBondDonorCount,HBondAcceptorCount/JSON"
     try:
         r = httpx.get(url, timeout=10)
-        return r.json()["PropertyTable"]["Properties"][0]["IsomericSMILES"]
+        data = r.json()["PropertyTable"]["Properties"][0]
+        return {
+            "smiles": data["IsomericSMILES"],
+            "mw": data.get("MW"),
+            "logP": data.get("XLogP"),
+            "tpsa": data.get("TPSA"),
+            "hbd": data.get("HBondDonorCount"),
+            "hba": data.get("HBondAcceptorCount"),
+        }
     except:
         return None
 
 
 # -----------------------------
-# ⚗️ Molecular Properties
+# ⚗️ Drug-likeness (NO RDKit)
 # -----------------------------
-def analyze(smiles: str):
-    mol = Chem.MolFromSmiles(smiles)
-    if not mol:
-        return None
-
-    return {
-        "molecular_weight": round(Descriptors.MolWt(mol), 2),
-        "logP": round(Descriptors.MolLogP(mol), 2),
-        "H_donors": Descriptors.NumHDonors(mol),
-        "H_acceptors": Descriptors.NumHAcceptors(mol),
-        "TPSA": round(Descriptors.TPSA(mol), 2),
-    }
-
-
-# -----------------------------
-# 💊 Drug-likeness score
-# -----------------------------
-def drug_score(smiles: str):
-    mol = Chem.MolFromSmiles(smiles)
-    if not mol:
+def drug_score(props: dict):
+    if not props:
         return 0
 
     score = 0
 
-    if Descriptors.MolWt(mol) < 500:
+    if props["mw"] and props["mw"] < 500:
         score += 1
-    if Descriptors.MolLogP(mol) < 5:
+    if props["logP"] and props["logP"] < 5:
         score += 1
-    if Descriptors.NumHDonors(mol) <= 5:
+    if props["hbd"] is not None and props["hbd"] <= 5:
         score += 1
-    if Descriptors.NumHAcceptors(mol) <= 10:
+    if props["hba"] is not None and props["hba"] <= 10:
         score += 1
 
     return score
 
 
 # -----------------------------
-# 🧬 SELFIES-based molecule generator
+# 🧬 SELFIES mutation generator
 # -----------------------------
 def generate_candidate(smiles: str):
     try:
@@ -105,123 +93,91 @@ def generate_candidate(smiles: str):
             i = random.randint(0, len(tokens) - 1)
             tokens[i] = random.choice(tokens)
 
-        mutated = "".join(tokens)
+        mutated = ".".join(tokens)
         new_smiles = sf.decoder(mutated)
 
-        mol = Chem.MolFromSmiles(new_smiles)
-        if mol:
-            return new_smiles
+        return new_smiles if new_smiles else smiles
     except:
-        pass
-
-    return smiles
+        return smiles
 
 
 # -----------------------------
-# 🧪 Similarity (Tanimoto)
+# 🧪 Similarity (lightweight, no RDKit)
 # -----------------------------
-def similarity(smiles1, smiles2):
-    mol1 = Chem.MolFromSmiles(smiles1)
-    mol2 = Chem.MolFromSmiles(smiles2)
+def similarity(smiles1: str, smiles2: str):
+    set1 = set(smiles1)
+    set2 = set(smiles2)
 
-    if not mol1 or not mol2:
+    if not set1 or not set2:
         return 0.0
 
-    fp1 = AllChem.GetMorganFingerprintAsBitVect(mol1, 2, nBits=2048)
-    fp2 = AllChem.GetMorganFingerprintAsBitVect(mol2, 2, nBits=2048)
-
-    return round(DataStructs.TanimotoSimilarity(fp1, fp2), 3)
+    return round(len(set1 & set2) / len(set1 | set2), 3)
 
 
 # -----------------------------
-# 🧠 Query understanding
+# 🧠 Query resolver
 # -----------------------------
 async def resolve_query(q: str):
-
     ql = q.lower()
 
-    # SMILES detection
     if any(x in ql for x in ["=", "(", ")", "#"]):
         return {"type": "molecule", "value": q}
 
-    # protein / disease case
-    if any(x in ql for x in ["virus", "covid", "protein", "vaccine", "disease"]):
-        return {"type": "protein", "value": "6LU7"}
+    drug = await ask_gemma(f"Return only a known drug or chemical name for: {q}")
 
-    # fallback LLM → drug name guess
-    drug = await ask_gemma(f"Return only a known drug name for: {q}")
-
-    if len(drug.split()) <= 3 and drug:
+    if drug and len(drug.split()) <= 4:
         return {"type": "molecule", "value": drug.strip()}
 
     return {"type": "molecule", "value": q}
 
 
 # -----------------------------
-# 🚀 MAIN ANALYZE API
+# 🚀 MAIN API
 # -----------------------------
 @app.get("/analyze")
-async def analyze_query(q: str):
+async def analyze(q: str):
 
     decision = await resolve_query(q)
+    name = decision["value"]
 
-    # -------------------------
-    # 🦠 PROTEIN MODE
-    # -------------------------
-    if decision["type"] == "protein":
-        return {
-            "type": "protein",
-            "pdb_id": decision["value"],
-            "explanation": await ask_gemma(
-                f"Explain mechanism and therapeutic relevance of {q}"
-            ),
-        }
+    # Get PubChem data
+    data = get_smiles(name)
 
-    # -------------------------
-    # 🧪 MOLECULE MODE
-    # -------------------------
-    smiles = decision["value"]
-
-    # PubChem lookup if not SMILES
-    if not any(x in smiles for x in ["=", "(", ")"]):
-        fetched = get_smiles(smiles)
-        if fetched:
-            smiles = fetched
-        else:
-            smiles = "CCO"  # fallback ethanol
+    if data:
+        smiles = data["smiles"]
+    else:
+        smiles = "CCO"  # fallback ethanol
 
     candidate = generate_candidate(smiles)
 
     return {
-        "type": "molecule",
         "input": q,
+        "molecule": name,
         "smiles": smiles,
         "candidate": candidate,
 
-        "properties": analyze(smiles),
+        "properties": data,
 
-        "drug_likeness_score": drug_score(candidate),
+        "drug_likeness_score": drug_score(data),
 
         "similarity_score": similarity(smiles, candidate),
 
         "explanation": await ask_gemma(
-            f"Explain pharmacology and therapeutic use of {q}"
+            f"Explain pharmacology and therapeutic relevance of {name}"
         ),
     }
 
 
 # -----------------------------
-# 📂 PROTEIN UPLOAD
+# 📂 Upload endpoint
 # -----------------------------
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
-
     content = await file.read()
     text = content.decode("utf-8", errors="ignore")
 
     return {
         "type": "protein",
         "preview": text[:4000],
-        "message": "Protein uploaded successfully",
-        "status": "Ready for docking module (future upgrade)",
+        "message": "Uploaded successfully",
     }
