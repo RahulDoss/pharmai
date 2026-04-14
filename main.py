@@ -21,7 +21,7 @@ app.add_middleware(
 # 🧠 LLM (HuggingFace - Gemma)
 # -----------------------------
 async def ask_gemma(prompt: str):
-    url = "https://api-inference.huggingface.co/models/google/gemma-2b-it"
+    url = "https://router.huggingface.co/hf-inference/models/google/gemma-2b-it"
     headers = {"Authorization": f"Bearer {HF_TOKEN}"}
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -36,6 +36,7 @@ async def ask_gemma(prompt: str):
                 return data["generated_text"]
 
             return str(data)
+
         except Exception as e:
             return f"LLM error: {str(e)}"
 
@@ -70,13 +71,13 @@ def drug_score(props: dict):
 
     score = 0
 
-    if props["mw"] and props["mw"] < 500:
+    if props.get("mw") and props["mw"] < 500:
         score += 1
-    if props["logP"] and props["logP"] < 5:
+    if props.get("logP") and props["logP"] < 5:
         score += 1
-    if props["hbd"] is not None and props["hbd"] <= 5:
+    if props.get("hbd") is not None and props["hbd"] <= 5:
         score += 1
-    if props["hba"] is not None and props["hba"] <= 10:
+    if props.get("hba") is not None and props["hba"] <= 10:
         score += 1
 
     return score
@@ -98,6 +99,7 @@ def generate_candidate(smiles: str):
         new_smiles = sf.decoder(mutated)
 
         return new_smiles if new_smiles else smiles
+
     except:
         return smiles
 
@@ -107,8 +109,10 @@ def generate_candidate(smiles: str):
 # -----------------------------
 def similarity(a: str, b: str):
     set1, set2 = set(a), set(b)
+
     if not set1 or not set2:
         return 0.0
+
     return round(len(set1 & set2) / len(set1 | set2), 3)
 
 
@@ -129,14 +133,13 @@ def is_protein_query(q: str):
 def get_pdb_id(query: str):
     q = query.lower()
 
-    # known real structures
     if "covid" in q or "virus" in q or "protease" in q:
-        return "6LU7"  # COVID main protease
+        return "6LU7"
 
     if "spike" in q:
         return "6VSB"
 
-    return "6LU7"  # default fallback
+    return "6LU7"
 
 
 # -----------------------------
@@ -182,10 +185,7 @@ async def analyze(q: str):
     # ---------------- MOLECULE MODE ----------------
     data = get_smiles(name)
 
-    if data:
-        smiles = data["smiles"]
-    else:
-        smiles = "CCO"
+    smiles = data["smiles"] if data else "CCO"
 
     candidate = generate_candidate(smiles)
 
@@ -212,6 +212,7 @@ async def analyze(q: str):
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     content = await file.read()
+
     return {
         "type": "protein",
         "preview": content.decode("utf-8", errors="ignore")[:4000],
