@@ -1,13 +1,12 @@
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-import os, httpx
-
-load_dotenv()
-HF_TOKEN = os.getenv("HF_TOKEN")
+from fastapi.responses import JSONResponse
+import httpx, os
+import google.generativeai as genai
 
 app = FastAPI()
 
+# ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -15,155 +14,176 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -----------------------------
-# 🧠 SAFE GEMMA CALL (FIXED)
-# -----------------------------
-async def ask_gemma(prompt: str):
-    url = "https://router.huggingface.co/v1/chat/completions"
+# ---------------- GEMMA ----------------
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+model = genai.GenerativeModel("gemma-4-26b-a4b-it")
 
-    headers = {
-        "Authorization": f"Bearer {HF_TOKEN}",
-        "Content-Type": "application/json"
-    }
 
-    payload = {
-        "model": "google/gemma-2b-it",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 300
-    }
-
+# ---------------- 🧠 GEMMA INTELLIGENT CLASSIFIER ----------------
+def classify(query: str):
+    """
+    Uses AI instead of hardcoded rules
+    """
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            res = await client.post(url, headers=headers, json=payload)
-            data = res.json()
-        return data["choices"][0]["message"]["content"]
-    except:
-        return "Explanation unavailable."
+        prompt = f"""
+You are a biomedical classifier.
 
+Classify the input into ONLY ONE category:
 
-# -----------------------------
-# 🧠 AI ROUTER (NO KEYWORDS)
-# -----------------------------
-async def classify_query(q: str):
-    prompt = f"""
-Classify this query into ONE word only:
+- drug (medicine, chemical compound, pharmaceutical)
+- molecule (chemical substance, not drug)
+- disease (illness like malaria, cancer, fever)
+- protein (virus, enzyme, biological protein, vaccine target)
 
-- protein (virus, vaccine, disease, infection, biological system)
-- molecule (drug, chemical, compound)
+Return ONLY one word.
 
-Query: {q}
-
-Return only: protein or molecule
+Input: {query}
 """
 
-    try:
-        res = await ask_gemma(prompt)
-        res = res.lower()
+        res = model.generate_content(prompt)
+        label = res.text.strip().lower()
 
-        if "protein" in res:
-            return "protein"
-        return "molecule"
+        # safety fallback
+        if label not in ["drug", "molecule", "disease", "protein"]:
+            return "molecule"
+
+        return label
+
     except:
         return "molecule"
 
 
-# -----------------------------
-# 🧬 PDB MAPPING
-# -----------------------------
-def get_pdb_id(q: str):
-    q = q.lower()
+# ---------------- REAL PUBCHEM SEARCH ----------------
+async def search_pubchem(query: str):
+    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{query}/property/IsomericSMILES,CanonicalSMILES/JSON"
 
-    if "nipah" in q:
-        return "5Z9J"
-    if "covid" in q:
-        return "6LU7"
-    if "spike" in q:
-        return "6VSB"
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(url)
 
-    return "6LU7"
+    try:
+        data = r.json()["PropertyTable"]["Properties"][0]
+        return {
+            "smiles": data.get("IsomericSMILES"),
+            "canonical_smiles": data.get("CanonicalSMILES")
+        }
+    except:
+        return None
 
 
-# -----------------------------
-# 🧪 FAKE SMILES SAFE FALLBACK
-# -----------------------------
-def get_smiles(q: str):
-    # simple safe demo mapping (no API crash)
+# ---------------- CID FETCH ----------------
+async def get_pubchem_cid(name: str):
+    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{name}/cids/JSON"
+
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url)
+
+    try:
+        return r.json()["IdentifierList"]["CID"][0]
+    except:
+        return None
+
+
+# ---------------- PROTEIN STRUCTURE ----------------
+async def get_protein_structure(query: str):
+    mapping = {
+        "covid": "6LU7",
+        "sars": "6LU7",
+        "flu": "1RUZ",
+        "rabies": "4Q6Q"
+    }
+
+    pdb = "6LU7"
+    for k in mapping:
+        if k in query.lower():
+            pdb = mapping[k]
+
     return {
-        "smiles": "CCO",
-        "mw": 46,
-        "logP": 0.1,
-        "tpsa": 20,
-        "hbd": 1,
-        "hba": 1
+        "pdb_id": pdb,
+        "viewer_url": f"https://3Dmol.org/viewer.html?pdb={pdb}"
     }
 
 
-# -----------------------------
-# 💊 DRUG SCORE
-# -----------------------------
-def drug_score(p):
-    if not p:
-        return 0
-    score = 0
-    if p["mw"] < 500:
-        score += 1
-    if p["logP"] < 5:
-        score += 1
-    if p["hbd"] <= 5:
-        score += 1
-    if p["hba"] <= 10:
-        score += 1
-    return score
+# ---------------- GEMMA EXPLANATION ----------------
+def explain(prompt: str):
+    try:
+        res = model.generate_content(prompt)
+        return res.text
+    except:
+        return "AI explanation unavailable"
 
 
-# -----------------------------
-# 🚀 MAIN API
-# -----------------------------
-@app.get("/analyze")
-async def analyze(q: str):
+# ---------------- 🧠 MAIN API ----------------
+@app.get("/discover")
+async def discover(q: str):
 
-    mode = await classify_query(q)
+    mode = classify(q)
+
+    # ---------------- DRUG MODE ----------------
+    if mode == "drug":
+
+        pubchem = await search_pubchem(q)
+        cid = await get_pubchem_cid(q)
+
+        return JSONResponse({
+            "type": "drug",
+            "query": q,
+            "cid": cid,
+            "pubchem": pubchem,
+            "viewer_3d": f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}" if cid else None,
+
+            "explanation": explain(
+                f"Explain this drug, its mechanism, uses, and side effects: {q}"
+            )
+        })
+
+    # ---------------- DISEASE MODE (NEW FIX 🔥) ----------------
+    if mode == "disease":
+
+        return JSONResponse({
+            "type": "disease",
+            "query": q,
+
+            "causes": explain(f"What causes {q}?"),
+            "treatment": explain(f"What are treatments for {q}?"),
+            "biology": explain(f"Explain the biology of {q}"),
+
+            "note": "No chemical structure because this is a disease, not a molecule."
+        })
 
     # ---------------- PROTEIN MODE ----------------
     if mode == "protein":
-        return {
+
+        protein = await get_protein_structure(q)
+
+        return JSONResponse({
             "type": "protein",
-            "pdb_id": get_pdb_id(q),
-            "input": q,
-            "explanation": await ask_gemma(
-                f"Explain disease, vaccine and virus mechanism for: {q}"
+            "query": q,
+            "structure": protein,
+            "ribbon_view": protein["viewer_url"],
+
+            "explanation": explain(
+                f"Explain protein structure and vaccine relevance of: {q}"
             )
-        }
+        })
 
     # ---------------- MOLECULE MODE ----------------
-    data = get_smiles(q)
+    pubchem = await search_pubchem(q)
+    cid = await get_pubchem_cid(q)
 
-    return {
+    return JSONResponse({
         "type": "molecule",
-        "input": q,
-        "smiles": data["smiles"],
-        "candidate": data["smiles"],
+        "query": q,
+        "cid": cid,
+        "pubchem": pubchem,
+        "viewer_3d": f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}" if cid else None,
 
-        "properties": data,
-        "drug_likeness_score": drug_score(data),
-        "similarity_score": 1.0,
-
-        "explanation": await ask_gemma(
-            f"Explain drug/chemical use and mechanism of: {q}"
+        "explanation": explain(
+            f"Explain chemical structure and properties of: {q}"
         )
-    }
+    })
 
 
-# -----------------------------
-# 📂 UPLOAD
-# -----------------------------
-@app.post("/upload")
-async def upload(file: UploadFile = File(...)):
-    content = await file.read()
-    return {
-        "type": "protein",
-        "pdb_id": "6LU7",
-        "message": "uploaded successfully",
-        "preview": content.decode("utf-8", errors="ignore")[:2000],
-        "explanation": "File interpreted as biological dataset."
-    }
+# ---------------- HEALTH CHECK ----------------
+@app.get("/")
+async def root():
+    return {"status": "Bio-AI backend running"} 
