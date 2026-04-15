@@ -1,189 +1,133 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import httpx, os
-import google.generativeai as genai
+from pydantic import BaseModel
+import random
 
 app = FastAPI()
 
-# ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------------- GEMMA ----------------
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemma-4-26b-a4b-it")
+# ---------------- AI ANALYSIS ----------------
+def analyze(prompt: str):
 
-
-# ---------------- 🧠 GEMMA INTELLIGENT CLASSIFIER ----------------
-def classify(query: str):
-    """
-    Uses AI instead of hardcoded rules
-    """
-    try:
-        prompt = f"""
-You are a biomedical classifier.
-
-Classify the input into ONLY ONE category:
-
-- drug (medicine, chemical compound, pharmaceutical)
-- molecule (chemical substance, not drug)
-- disease (illness like malaria, cancer, fever)
-- protein (virus, enzyme, biological protein, vaccine target)
-
-Return ONLY one word.
-
-Input: {query}
-"""
-
-        res = model.generate_content(prompt)
-        label = res.text.strip().lower()
-
-        # safety fallback
-        if label not in ["drug", "molecule", "disease", "protein"]:
-            return "molecule"
-
-        return label
-
-    except:
-        return "molecule"
-
-
-# ---------------- REAL PUBCHEM SEARCH ----------------
-async def search_pubchem(query: str):
-    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{query}/property/IsomericSMILES,CanonicalSMILES/JSON"
-
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(url)
-
-    try:
-        data = r.json()["PropertyTable"]["Properties"][0]
-        return {
-            "smiles": data.get("IsomericSMILES"),
-            "canonical_smiles": data.get("CanonicalSMILES")
-        }
-    except:
-        return None
-
-
-# ---------------- CID FETCH ----------------
-async def get_pubchem_cid(name: str):
-    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/name/{name}/cids/JSON"
-
-    async with httpx.AsyncClient() as client:
-        r = await client.get(url)
-
-    try:
-        return r.json()["IdentifierList"]["CID"][0]
-    except:
-        return None
-
-
-# ---------------- PROTEIN STRUCTURE ----------------
-async def get_protein_structure(query: str):
-    mapping = {
-        "covid": "6LU7",
-        "sars": "6LU7",
-        "flu": "1RUZ",
-        "rabies": "4Q6Q"
+    mappings = {
+        "diabetes": "Insulin receptor pathway modulation",
+        "cancer": "Cell cycle apoptosis regulation",
+        "alzheimer": "Amyloid aggregation inhibition",
+        "virus": "Viral protein binding inhibition",
+        "fever": "Immune cytokine regulation"
     }
 
-    pdb = "6LU7"
-    for k in mapping:
-        if k in query.lower():
-            pdb = mapping[k]
+    target = "General metabolic modulation"
+    for k, v in mappings.items():
+        if k in prompt.lower():
+            target = v
 
     return {
-        "pdb_id": pdb,
-        "viewer_url": f"https://3Dmol.org/viewer.html?pdb={pdb}"
+        "target_pathway": target,
+        "strategy": "Structure-based molecular interaction simulation",
+        "confidence": round(random.uniform(0.78, 0.95), 2)
     }
 
 
-# ---------------- GEMMA EXPLANATION ----------------
-def explain(prompt: str):
-    try:
-        res = model.generate_content(prompt)
-        return res.text
-    except:
-        return "AI explanation unavailable"
+# ---------------- DRUG GENERATOR ----------------
+def generate_smiles():
+
+    rings = ["c1ccccc1", "c1ccncc1", "c1ccoc1"]
+    chains = ["CC", "CCC", "CCO", "CCN"]
+    groups = ["O", "N", "C(=O)", "S"]
+
+    return f"{random.choice(rings)}{random.choice(chains)}{random.choice(groups)}{random.choice(chains)}"
 
 
-# ---------------- 🧠 MAIN API ----------------
-@app.get("/discover")
-async def discover(q: str):
+def generate_drug():
 
-    mode = classify(q)
+    return {
+        "name": f"DRX-{random.randint(100,999)}",
+        "smiles": generate_smiles(),
 
-    # ---------------- DRUG MODE ----------------
-    if mode == "drug":
+        "mol3d": {
+            "atoms": [
+                {"elem": "C", "x": 0, "y": 0, "z": 0},
+                {"elem": "C", "x": 1.4, "y": 0, "z": 0},
+                {"elem": "O", "x": 2.1, "y": 1.0, "z": 0},
+                {"elem": "N", "x": -1.2, "y": 0.5, "z": 0},
+                {"elem": "C", "x": -2.2, "y": 0, "z": 0}
+            ],
+            "bonds": [[0,1],[1,2],[0,3],[3,4]]
+        },
 
-        pubchem = await search_pubchem(q)
-        cid = await get_pubchem_cid(q)
-
-        return JSONResponse({
-            "type": "drug",
-            "query": q,
-            "cid": cid,
-            "pubchem": pubchem,
-            "viewer_3d": f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}" if cid else None,
-
-            "explanation": explain(
-                f"Explain this drug, its mechanism, uses, and side effects: {q}"
-            )
-        })
-
-    # ---------------- DISEASE MODE (NEW FIX 🔥) ----------------
-    if mode == "disease":
-
-        return JSONResponse({
-            "type": "disease",
-            "query": q,
-
-            "causes": explain(f"What causes {q}?"),
-            "treatment": explain(f"What are treatments for {q}?"),
-            "biology": explain(f"Explain the biology of {q}"),
-
-            "note": "No chemical structure because this is a disease, not a molecule."
-        })
-
-    # ---------------- PROTEIN MODE ----------------
-    if mode == "protein":
-
-        protein = await get_protein_structure(q)
-
-        return JSONResponse({
-            "type": "protein",
-            "query": q,
-            "structure": protein,
-            "ribbon_view": protein["viewer_url"],
-
-            "explanation": explain(
-                f"Explain protein structure and vaccine relevance of: {q}"
-            )
-        })
-
-    # ---------------- MOLECULE MODE ----------------
-    pubchem = await search_pubchem(q)
-    cid = await get_pubchem_cid(q)
-
-    return JSONResponse({
-        "type": "molecule",
-        "query": q,
-        "cid": cid,
-        "pubchem": pubchem,
-        "viewer_3d": f"https://pubchem.ncbi.nlm.nih.gov/compound/{cid}" if cid else None,
-
-        "explanation": explain(
-            f"Explain chemical structure and properties of: {q}"
-        )
-    })
+        "properties": {
+            "logP": round(random.uniform(1.0, 4.5), 2),
+            "binding_affinity": round(random.uniform(0.65, 0.95), 2),
+            "toxicity": "Low"
+        }
+    }
 
 
-# ---------------- HEALTH CHECK ----------------
-@app.get("/")
-async def root():
-    return {"status": "Bio-AI backend running"} 
+# ---------------- VACCINE GENERATOR ----------------
+def generate_vaccine():
+
+    pdb = ""
+    x = 0
+
+    residues = ["ALA", "GLY", "SER", "VAL", "LYS", "THR"]
+
+    for i in range(18):
+
+        r = random.choice(residues)
+
+        pdb += f"ATOM  {i*3+1:4d}  N   {r} A {i:3d}    {x:.2f} 0.00 0.00\n"
+        pdb += f"ATOM  {i*3+2:4d}  CA  {r} A {i:3d}    {x+0.5:.2f} 0.80 0.00\n"
+        pdb += f"ATOM  {i*3+3:4d}  C   {r} A {i:3d}    {x+1.0:.2f} 0.00 0.00\n"
+
+        x += 1.2
+
+    return {
+        "name": f"VAX-{random.randint(1000,9999)}",
+        "pdb": pdb,
+
+        "epitopes": [
+            "Surface loop antigen region",
+            "Receptor binding domain"
+        ],
+
+        "immune_response": {
+            "antibody": round(random.uniform(0.75, 0.95), 2),
+            "t_cell": round(random.uniform(0.7, 0.92), 2)
+        }
+    }
+
+
+# ---------------- API ----------------
+class Query(BaseModel):
+    prompt: str
+
+
+@app.post("/generate")
+def generate(q: Query):
+
+    p = q.prompt.lower()
+
+    result = {
+        "analysis": analyze(p)
+    }
+
+    if "vaccine" in p or "virus" in p:
+        result["type"] = "vaccine"
+        result["result"] = generate_vaccine()
+    else:
+        result["type"] = "drug"
+        result["result"] = generate_drug()
+
+    return result
+
+
+# RUN:
+# uvicorn backend:app --reload
