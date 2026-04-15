@@ -1,20 +1,44 @@
-<!DOCTYPE html>
+    <!DOCTYPE html>
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Pharma AI</title>
+<title>Bio AI Explorer</title>
 
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<!-- 3D libraries -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/3Dmol/2.0.4/3Dmol-min.js"></script>
-<script src="https://unpkg.com/ngl"></script>
+<script src="https://unpkg.com/ngl@2.0.0-dev.39/dist/ngl.js"></script>
 
 <style>
-body { background:black; color:white; font-family:monospace; }
-.viewer { height:420px; border:1px solid #333; border-radius:10px; }
-.card { border:1px solid #333; padding:10px; margin-top:10px; }
+body { background:#000; color:white; font-family:monospace; }
+.viewer {
+  height:450px;
+  border:1px solid #333;
+  border-radius:12px;
+  margin-top:10px;
+}
+.card {
+  border:1px solid #333;
+  padding:12px;
+  margin-top:10px;
+  border-radius:10px;
+}
+input {
+  padding:10px;
+  width:300px;
+  border-radius:8px;
+  color:black;
+}
+button {
+  padding:10px 15px;
+  margin-left:10px;
+  border-radius:8px;
+  background:#22c55e;
+}
 </style>
 </head>
 
@@ -27,78 +51,138 @@ const {useState,useEffect,useRef} = React;
 
 const API_URL = "https://pharmai-vgau.onrender.com";
 
-function Viewer({data}){
+/* ---------------- VIEWER ---------------- */
+function Viewer({data}) {
 
-  const molRef = useRef();
-  const protRef = useRef();
+  const molRef = useRef(null);
+  const protRef = useRef(null);
 
-  useEffect(()=>{
+  useEffect(() => {
+    if (!data) return;
 
-    if(!data) return;
+    /* ================= PROTEIN (RIBBON VIEW) ================= */
+    if (data.type === "protein" && protRef.current) {
 
-    if(data.type==="protein" && protRef.current){
+      protRef.current.innerHTML = "";
+
       const stage = new NGL.Stage(protRef.current);
-      stage.loadFile(`rcsb://${data.pdb_id}`).then(c=>{
-        c.addRepresentation("cartoon",{colorScheme:"chainname"});
-        c.autoView();
+
+      stage.loadFile(`rcsb://${data.structure.pdb_id}`).then(comp => {
+        comp.addRepresentation("cartoon", {
+          colorScheme: "chainname"
+        });
+        comp.addRepresentation("ball+stick", {
+          sele: "hetero"
+        });
+        comp.autoView();
       });
+
+      // enable zoom + rotate
+      stage.setParameters({ backgroundColor: "black" });
     }
 
-    if(data.type==="molecule" && molRef.current){
-      const viewer = $3Dmol.createViewer(molRef.current,{backgroundColor:"black"});
+    /* ================= MOLECULE / DRUG ================= */
+    if ((data.type === "drug" || data.type === "molecule") && molRef.current) {
 
-      fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/${data.smiles}/SDF`)
-      .then(r=>r.text())
-      .then(sdf=>{
-        viewer.addModel(sdf,"sdf");
-        viewer.setStyle({stick:{radius:0.2}});
-        viewer.zoomTo();
-        viewer.spin(true);
-        viewer.render();
+      molRef.current.innerHTML = "";
+
+      const viewer = $3Dmol.createViewer(molRef.current, {
+        backgroundColor: "black"
       });
+
+      const smiles = data.pubchem?.smiles;
+
+      if (!smiles) return;
+
+      // FIX: correct PubChem SDF API
+      fetch(`https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/${encodeURIComponent(smiles)}/SDF`)
+        .then(res => res.text())
+        .then(sdf => {
+
+          viewer.addModel(sdf, "sdf");
+
+          viewer.setStyle({}, {
+            stick: { radius: 0.25 },
+            sphere: { scale: 0.25 }
+          });
+
+          viewer.zoomTo();
+          viewer.spin(true);   // 360° auto rotation
+          viewer.render();
+        });
     }
 
-  },[data]);
+  }, [data]);
 
   return (
     <div>
-      {data?.type==="protein" && <div className="viewer" ref={protRef}></div>}
-      {data?.type==="molecule" && <div className="viewer" ref={molRef}></div>}
+      {data?.structure && (
+        <div className="viewer" ref={protRef}></div>
+      )}
+
+      {data?.pubchem && (
+        <div className="viewer" ref={molRef}></div>
+      )}
     </div>
   );
 }
 
-function App(){
+/* ---------------- APP ---------------- */
+function App() {
 
-  const [q,setQ] = useState("");
-  const [data,setData] = useState(null);
-  const [loading,setLoading] = useState(false);
+  const [q, setQ] = useState("");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
 
-  const run = async()=>{
+  const run = async () => {
     setLoading(true);
-    const r = await fetch(`${API_URL}/analyze?q=${q}`);
-    const d = await r.json();
-    setData(d);
+
+    const res = await fetch(`${API_URL}/discover?q=${encodeURIComponent(q)}`);
+    const json = await res.json();
+
+    setData(json);
     setLoading(false);
   };
 
   return (
     <div style={{padding:20}}>
 
-      <h2>🧬 Pharma AI</h2>
+      <h1 style={{fontSize:24}}>🧬 Bio AI Drug Explorer</h1>
 
-      <input value={q} onChange={e=>setQ(e.target.value)} />
-      <button onClick={run}>Analyze</button>
+      <div style={{marginTop:10}}>
+        <input
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder="Try: aspirin / malaria / covid / diabetes"
+        />
+        <button onClick={run}>Analyze</button>
+      </div>
 
       {loading && <p>Loading...</p>}
 
-      {data && <Viewer data={data}/>}
+      {/* 3D VIEWER */}
+      {data && <Viewer data={data} />}
 
+      {/* INFO PANEL */}
       {data && (
         <div className="card">
-          <div>💊 Score: {data.drug_likeness_score}</div>
-          <div>🧪 Similarity: {data.similarity_score}</div>
-          <div>📘 {String(data.explanation)}</div>
+
+          <div>🧠 Type: {data.type}</div>
+
+          {data.cid && <div>💊 CID: {data.cid}</div>}
+
+          {data.explanation && (
+            <div style={{marginTop:10}}>
+              📘 {data.explanation}
+            </div>
+          )}
+
+          {data.type === "disease" && (
+            <div style={{marginTop:10}}>
+              🦠 Disease Mode (no molecule structure)
+            </div>
+          )}
+
         </div>
       )}
 
